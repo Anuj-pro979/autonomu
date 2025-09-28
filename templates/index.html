@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Motor Control - Virtual Joystick</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            color: white;
+            height: 100vh;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            padding: 10px;
+        }
+
+        .header {
+            text-align: center;
+            padding: 10px;
+            background: rgba(0,0,0,0.3);
+            border-radius: 10px;
+            margin-bottom: 10px;
+        }
+
+        .status-bar {
+            display: flex;
+            justify-content: space-around;
+            background: rgba(0,0,0,0.2);
+            padding: 8px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            font-size: 12px;
+            margin: 2px;
+        }
+
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+
+        .status-green { background: #4CAF50; }
+        .status-red { background: #f44336; }
+        .status-orange { background: #ff9800; }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            gap: 10px;
+        }
+
+        .left-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .joystick-container {
+            background: rgba(0,0,0,0.3);
+            border-radius: 15px;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex: 1;
+            position: relative;
+        }
+
+        .joystick-area {
+            width: 200px;
+            height: 200px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            position: relative;
+            background: radial-gradient(circle, rgba(255,255,255,0.1), rgba(255,255,255,0.05));
+            cursor: pointer;
+            touch-action: none;
+        }
+
+        .joystick-handle {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(145deg, #4CAF50, #45a049);
+            border-radius: 50%;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            cursor: grab;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            transition: all 0.1s ease;
+            border: 2px solid rgba(255,255,255,0.2);
+        }
+
+        .joystick-handle:active {
+            cursor: grabbing;
+            transform: translate(-50%, -50%) scale(1.1);
+        }
+
+        .joystick-crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .crosshair-line {
+            position: absolute;
+            background: rgba(255,255,255,0.2);
+        }
+
+        .crosshair-h {
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 1px;
+            transform: translateY(-50%);
+        }
+
+        .crosshair-v {
+            left: 50%;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            transform: translateX(-50%);
+        }
+
+        .controls-panel {
+            background: rgba(0,0,0,0.3);
+            border-radius: 10px;
+            padding: 15px;
+        }
+
+        .right-panel {
+            width: 250px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .motor-status {
+            background: rgba(0,0,0,0.3);
+            border-radius: 10px;
+            padding: 15px;
+        }
+
+        .motor-info {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+            padding: 5px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 5px;
+        }
+
+        .gps-panel {
+            background: rgba(0,0,0,0.3);
+            border-radius: 10px;
+            padding: 15px;
+            font-size: 12px;
+        }
+
+        .emergency-btn {
+            background: linear-gradient(145deg, #ff4444, #cc0000);
+            color: white;
+            border: none;
+            padding: 15px 20px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 10px 0;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            transition: all 0.2s ease;
+        }
+
+        .emergency-btn:hover {
+            background: linear-gradient(145deg, #ff6666, #ff0000);
+            transform: translateY(-2px);
+        }
+
+        .emergency-btn:active {
+            transform: translateY(0);
+        }
+
+        .coord-display {
+            font-family: monospace;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+
+        .connection-status {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .connected {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .disconnected {
+            background: #f44336;
+            color: white;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                flex-direction: column;
+            }
+            
+            .right-panel {
+                width: 100%;
+                flex-direction: row;
+            }
+            
+            .joystick-area {
+                width: 150px;
+                height: 150px;
+            }
+            
+            .joystick-handle {
+                width: 45px;
+                height: 45px;
+            }
+        }
+
+        .pulse {
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="connection-status" id="connectionStatus">Connecting...</div>
+        
+        <div class="header">
+            <h1>? Motor Control Interface</h1>
+            <p>Virtual Joystick Tank Drive</p>
+        </div>
+
+        <div class="status-bar">
+            <div class="status-item">
+                <div class="status-indicator" id="motorsStatus"></div>
+                <span>Motors: <span id="motorsText">Unknown</span></span>
+            </div>
+            <div class="status-item">
+                <div class="status-indicator" id="connectionIndicator"></div>
+                <span>Connection: <span id="connectionText">Connecting</span></span>
+            </div>
+            <div class="status-item">
+                <div class="status-indicator" id="gpsStatus"></div>
+                <span>GPS: <span id="gpsText">Searching</span></span>
+            </div>
+            <div class="status-item">
+                <span>Clients: <span id="clientCount">0</span></span>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="left-panel">
+                <div class="joystick-container">
+                    <div class="joystick-area" id="joystickArea">
+                        <div class="joystick-crosshair">
+                            <div class="crosshair-line crosshair-h"></div>
+                            <div class="crosshair-line crosshair-v"></div>
+                        </div>
+                        <div class="joystick-handle" id="joystickHandle"></div>
+                    </div>
+                    <div class="coord-display">
+                        X: <span id="coordX">0.00</span> | Y: <span id="coordY">0.00</span>
+                    </div>
+                </div>
+
+                <div class="controls-panel">
+                    <button class="emergency-btn" id="emergencyBtn">? EMERGENCY STOP</button>
+                    <div style="text-align: center; font-size: 12px; margin-top: 10px;">
+                        <div>? Individual Motor Control:</div>
+                        <div>?? Up/Down: Motor 1 Forward/Back</div>
+                        <div>???? Left/Right: Motor 2 Left/Right</div>
+                        <div style="margin-top: 5px;">? Red button for emergency stop</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="right-panel">
+                <div class="motor-status">
+                    <h3>Motor Status</h3>
+                    <div class="motor-info">
+                        <span>Motor 1 (F/B):</span>
+                        <span id="motor1Status">Stopped</span>
+                    </div>
+                    <div class="motor-info">
+                        <span>Motor 2 (L/R):</span>
+                        <span id="motor2Status">Stopped</span>
+                    </div>
+                    <div style="font-size: 11px; margin-top: 10px; opacity: 0.8;">
+                        <div>?? Y-axis: Motor 1 Forward/Back</div>
+                        <div>???? X-axis: Motor 2 Left/Right</div>
+                        <div style="margin-top: 5px;">
+                            <div>GPIO 18/19: Motor 1 (DIR/PWM)</div>
+                            <div>GPIO 20/21: Motor 2 (DIR/PWM)</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="gps-panel">
+                    <h3>GPS Location</h3>
+                    <div id="gpsInfo">
+                        <div>Lat: <span id="gpsLat">--</span></div>
+                        <div>Lon: <span id="gpsLon">--</span></div>
+                        <div>Accuracy: <span id="gpsAccuracy">--</span>m</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ===== Socket.IO Connection =====
+        const socket = io();
+        
+        // ===== Global Variables =====
+        let isDragging = false;
+        let joystickCenter = { x: 0, y: 0 };
+        let joystickRadius = 0;
+        let currentPosition = { x: 0, y: 0 };
+        let lastSentPosition = { x: 0, y: 0 };
+        let sendInterval = null;
+        
+        // ===== DOM Elements =====
+        const joystickArea = document.getElementById('joystickArea');
+        const joystickHandle = document.getElementById('joystickHandle');
+        const emergencyBtn = document.getElementById('emergencyBtn');
+        const connectionStatus = document.getElementById('connectionStatus');
+        
+        // ===== Initialize Joystick =====
+        function initJoystick() {
+            const rect = joystickArea.getBoundingClientRect();
+            joystickCenter = {
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2
+            };
+            joystickRadius = Math.min(rect.width, rect.height) / 2 - 30;
+        }
+        
+        // ===== Update Joystick Position =====
+        function updateJoystickPosition(clientX, clientY) {
+            const dx = clientX - joystickCenter.x;
+            const dy = clientY - joystickCenter.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            let finalX, finalY;
+            
+            if (distance <= joystickRadius) {
+                finalX = dx;
+                finalY = dy;
+            } else {
+                const angle = Math.atan2(dy, dx);
+                finalX = Math.cos(angle) * joystickRadius;
+                finalY = Math.sin(angle) * joystickRadius;
+            }
+            
+            // Update handle position
+            joystickHandle.style.transform = `translate(${finalX - 30}px, ${finalY - 30}px)`;
+            
+            // Convert to normalized coordinates (-1 to 1)
+            currentPosition.x = finalX / joystickRadius;
+            currentPosition.y = -finalY / joystickRadius; // Invert Y for intuitive control
+            
+            // Update coordinate display
+            document.getElementById('coordX').textContent = currentPosition.x.toFixed(2);
+            document.getElementById('coordY').textContent = currentPosition.y.toFixed(2);
+        }
+        
+        // ===== Reset Joystick =====
+        function resetJoystick() {
+            joystickHandle.style.transform = 'translate(-30px, -30px)';
+            currentPosition = { x: 0, y: 0 };
+            document.getElementById('coordX').textContent = '0.00';
+            document.getElementById('coordY').textContent = '0.00';
+            
+            // Send stop command
+            socket.emit('joystick_input', currentPosition);
+        }
+        
+        // ===== Send Position Updates =====
+        function startSendingPosition() {
+            if (sendInterval) clearInterval(sendInterval);
+            
+            sendInterval = setInterval(() => {
+                if (Math.abs(currentPosition.x - lastSentPosition.x) > 0.01 || 
+                    Math.abs(currentPosition.y - lastSentPosition.y) > 0.01) {
+                    
+                    socket.emit('joystick_input', currentPosition);
+                    lastSentPosition = { ...currentPosition };
+                }
+            }, 50); // Send updates at 20Hz
+        }
+        
+        function stopSendingPosition() {
+            if (sendInterval) {
+                clearInterval(sendInterval);
+                sendInterval = null;
+            }
+        }
+        
+        // ===== Mouse Events =====
+        joystickArea.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            joystickHandle.style.cursor = 'grabbing';
+            updateJoystickPosition(e.clientX, e.clientY);
+            startSendingPosition();
+            e.preventDefault();
+        });
+        
+        document.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                updateJoystickPosition(e.clientX, e.clientY);
+            }
+        });
+        
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                joystickHandle.style.cursor = 'grab';
+                resetJoystick();
+                stopSendingPosition();
+            }
+        });
+        
+        // ===== Touch Events =====
+        joystickArea.addEventListener('touchstart', (e) => {
+            isDragging = true;
+            const touch = e.touches[0];
+            updateJoystickPosition(touch.clientX, touch.clientY);
+            startSendingPosition();
+            e.preventDefault();
+        });
+        
+        document.addEventListener('touchmove', (e) => {
+            if (isDragging && e.touches.length > 0) {
+                const touch = e.touches[0];
+                updateJoystickPosition(touch.clientX, touch.clientY);
+                e.preventDefault();
+            }
+        });
+        
+        document.addEventListener('touchend', (e) => {
+            if (isDragging) {
+                isDragging = false;
+                resetJoystick();
+                stopSendingPosition();
+            }
+        });
+        
+        // ===== Emergency Stop =====
+        emergencyBtn.addEventListener('click', () => {
+            socket.emit('emergency_stop');
+            resetJoystick();
+            stopSendingPosition();
+            
+            // Visual feedback
+            emergencyBtn.style.background = 'linear-gradient(145deg, #ff0000, #990000)';
+            setTimeout(() => {
+                emergencyBtn.style.background = 'linear-gradient(145deg, #ff4444, #cc0000)';
+            }, 200);
+        });
+        
+        // ===== GPS Tracking =====
+        function startGPSTracking() {
+            if (navigator.geolocation) {
+                navigator.geolocation.watchPosition(
+                    (position) => {
+                        const gpsData = {
+                            lat: position.coords.latitude,
+                            lon: position.coords.longitude,
+                            accuracy: Math.round(position.coords.accuracy)
+                        };
+                        
+                        socket.emit('gps_data', gpsData);
+                        updateGPSDisplay(gpsData);
+                    },
+                    (error) => {
+                        console.log('GPS Error:', error);
+                        updateGPSStatus('Error', 'status-red');
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 10000,
+                        maximumAge: 5000
+                    }
+                );
+            }
+        }
+        
+        function updateGPSDisplay(gps) {
+            document.getElementById('gpsLat').textContent = gps.lat.toFixed(6);
+            document.getElementById('gpsLon').textContent = gps.lon.toFixed(6);
+            document.getElementById('gpsAccuracy').textContent = gps.accuracy;
+            updateGPSStatus('Active', 'status-green');
+        }
+        
+        function updateGPSStatus(text, className) {
+            document.getElementById('gpsText').textContent = text;
+            document.getElementById('gpsStatus').className = `status-indicator ${className}`;
+        }
+        
+        // ===== Socket Event Handlers =====
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            connectionStatus.textContent = '? Connected';
+            connectionStatus.className = 'connection-status connected';
+            
+            document.getElementById('connectionText').textContent = 'Connected';
+            document.getElementById('connectionIndicator').className = 'status-indicator status-green';
+            
+            startGPSTracking();
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+            connectionStatus.textContent = '? Disconnected';
+            connectionStatus.className = 'connection-status disconnected';
+            
+            document.getElementById('connectionText').textContent = 'Disconnected';
+            document.getElementById('connectionIndicator').className = 'status-indicator status-red';
+            
+            // Reset motor status
+            document.getElementById('motor1Status').textContent = 'Disconnected';
+            document.getElementById('motor2Status').textContent = 'Disconnected';
+        });
+        
+        socket.on('system_status', (data) => {
+            const motorsReady = data.motors_ready;
+            document.getElementById('motorsText').textContent = motorsReady ? 'Ready' : 'Simulation';
+            document.getElementById('motorsStatus').className = 
+                `status-indicator ${motorsReady ? 'status-green' : 'status-orange'}`;
+        });
+        
+        socket.on('motor_status_update', (motors) => {
+            // Format individual motor status display
+            const formatMotorStatus = (speed, dir) => {
+                if (dir === 'stop' || speed === 0) return 'Stopped';
+                
+                // Motor 1: Forward/Backward directions
+                if (dir === 'forward') return `${(speed * 100).toFixed(0)}% Forward`;
+                if (dir === 'backward') return `${(speed * 100).toFixed(0)}% Backward`;
+                
+                // Motor 2: Left/Right directions  
+                if (dir === 'left') return `${(speed * 100).toFixed(0)}% Left`;
+                if (dir === 'right') return `${(speed * 100).toFixed(0)}% Right`;
+                
+                return `${(speed * 100).toFixed(0)}% ${dir}`;
+            };
+            
+            document.getElementById('motor1Status').textContent = 
+                formatMotorStatus(motors.motor1_speed, motors.motor1_dir);
+            document.getElementById('motor2Status').textContent = 
+                formatMotorStatus(motors.motor2_speed, motors.motor2_dir);
+        });
+        
+        socket.on('emergency_stop_activated', () => {
+            alert('? Emergency Stop Activated!');
+            resetJoystick();
+        });
+        
+        socket.on('auto_stop_triggered', (data) => {
+            console.log('Auto-stop triggered:', data.reason);
+            resetJoystick();
+        });
+        
+        // ===== Window Resize Handler =====
+        window.addEventListener('resize', () => {
+            setTimeout(initJoystick, 100);
+        });
+        
+        // ===== Initialize on Load =====
+        window.addEventListener('load', () => {
+            initJoystick();
+            console.log('Motor Control Interface Ready');
+        });
+        
+        // ===== Prevent Context Menu =====
+        document.addEventListener('contextmenu', (e) => e.preventDefault());
+        
+        // ===== Keyboard Shortcuts =====
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                emergencyBtn.click();
+            }
+        });
+    </script>
+</body>
+</html>
