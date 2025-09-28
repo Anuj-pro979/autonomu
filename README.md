@@ -1,3 +1,10 @@
+we made everything work with signal and remote accces  so we need to collect data of sinal and train our model and use in raspeberry pi.
+
+but lidar is extern we also need to intigrate it. 
+
+cam done relay done lidar done next intigrate all and train the model.
+
+
 Exactly ✅ — if you go with the **Serial override approach** I just explained, **you do not need to change your Arduino code at all**.
 next chages 
 
