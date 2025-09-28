@@ -1,584 +1,1229 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Integrated Motor Control + LiDAR + Camera Server
-Features:
-- Individual motor control (Motor1: F/B, Motor2: L/R)
-- Real-time LiDAR mapping (D200 via serial)
-- Pi Camera streaming
-- Web interface with virtual joystick
-"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot Control - Gaming Interface</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-from flask import Flask, render_template, request, Response
-from flask_socketio import SocketIO, emit
-from gpiozero import PWMOutputDevice, DigitalOutputDevice
-import time
-import threading
-import socket
-import json
-import serial
-import struct
-import collections
-import math
-import base64
-import io
+        body {
+            font-family: 'Arial', sans-serif;
+            background: #000;
+            color: white;
+            height: 100vh;
+            overflow: hidden;
+            user-select: none;
+        }
 
-# Camera imports
-try:
-    from picamera2 import Picamera2
-    import cv2
-    CAMERA_AVAILABLE = True
-    print("Camera imports successful")
-except ImportError as e:
-    print(f"Camera import failed: {e}")
-    print("Run: sudo apt install python3-picamera2 python3-opencv")
-    CAMERA_AVAILABLE = False
+        /* Full Screen Camera Background */
+        .camera-background {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+            background: #111;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
 
-# ===== MOTOR CONFIGURATION =====
-DIR1_PIN = 18   # Motor 1 Direction (Forward/Backward)
-PWM1_PIN = 19   # Motor 1 Speed (Forward/Backward)
-DIR2_PIN = 20   # Motor 2 Direction (Left/Right)
-PWM2_PIN = 21   # Motor 2 Speed (Left/Right)
+        .camera-feed {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0.9;
+        }
 
-# ===== LIDAR CONFIGURATION =====
-LIDAR_PORT = "/dev/ttyUSB0"  # Change to your LiDAR port
-LIDAR_BAUDRATE = 230400
-FRAME_LEN = 47
-HEADER = 0x54
-POINTS_PER_PACK = 12
-LIDAR_SIMULATE = True  # Set False when hardware connected
+        .camera-offline {
+            font-size: 24px;
+            color: #666;
+            text-align: center;
+        }
 
-# LiDAR CRC Table (from D200 documentation)
-CRC_TABLE = [
-0x00,0x4d,0x9a,0xd7,0x79,0x34,0xe3,0xae,0xf2,0xbf,0x68,0x25,0x8b,0xc6,0x11,0x5c,
-0xa9,0xe4,0x33,0x7e,0xd0,0x9d,0x4a,0x07,0x5b,0x16,0xc1,0x8c,0x22,0x6f,0xb8,0xf5,
-0x1f,0x52,0x85,0xc8,0x66,0x2b,0xfc,0xb1,0xed,0xa0,0x77,0x3a,0x94,0xd9,0x0e,0x43,
-0xb6,0xfb,0x2c,0x61,0xcf,0x82,0x55,0x18,0x44,0x09,0xde,0x93,0x3d,0x70,0xa7,0xea,
-0x3e,0x73,0xa4,0xe9,0x47,0x0a,0xdd,0x90,0xcc,0x81,0x56,0x1b,0xb5,0xf8,0x2f,0x62,
-0x97,0xda,0x0d,0x40,0xee,0xa3,0x74,0x39,0x65,0x28,0xff,0xb2,0x1c,0x51,0x86,0xcb,
-0x21,0x6c,0xbb,0xf6,0x58,0x15,0xc2,0x8f,0xd3,0x9e,0x49,0x04,0xaa,0xe7,0x30,0x7d,
-0x88,0xc5,0x12,0x5f,0xf1,0xbc,0x6b,0x26,0x7a,0x37,0xe0,0xad,0x03,0x4e,0x99,0xd4,
-0x7c,0x31,0xe6,0xab,0x05,0x48,0x9f,0xd2,0x8e,0xc3,0x14,0x59,0xf7,0xba,0x6d,0x20,
-0xd5,0x98,0x4f,0x02,0xac,0xe1,0x36,0x7b,0x27,0x6a,0xbd,0xf0,0x5e,0x13,0xc4,0x89,
-0x63,0x2e,0xf9,0xb4,0x1a,0x57,0x80,0xcd,0x91,0xdc,0x0b,0x46,0xe8,0xa5,0x72,0x3f,
-0xca,0x87,0x50,0x1d,0xb3,0xfe,0x29,0x64,0x38,0x75,0xa2,0xef,0x41,0x0c,0xdb,0x96,
-0x42,0x0f,0xd8,0x95,0x3b,0x76,0xa1,0xec,0xb0,0xfd,0x2a,0x67,0xc9,0x84,0x53,0x1e,
-0xeb,0xa6,0x71,0x3c,0x92,0xdf,0x08,0x45,0x19,0x54,0x83,0xce,0x60,0x2d,0xfa,0xb7,
-0x5d,0x10,0xc7,0x8a,0x24,0x69,0xbe,0xf3,0xaf,0xe2,0x35,0x78,0xd6,0x9b,0x4c,0x01,
-0xf4,0xb9,0x6e,0x23,0x8d,0xc0,0x17,0x5a,0x06,0x4b,0x9c,0xd1,0x7f,0x32,0xe5,0xa8
-]
+        /* HUD Overlay */
+        .hud-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 10;
+            pointer-events: none;
+        }
 
-print("Integrated Motor + LiDAR + Camera Control Server")
-print(f"Motor 1 (F/B): DIR={DIR1_PIN}, PWM={PWM1_PIN}")
-print(f"Motor 2 (L/R): DIR={DIR2_PIN}, PWM={PWM2_PIN}")
-print(f"LiDAR: {LIDAR_PORT} @ {LIDAR_BAUDRATE}")
+        /* Top Status Bar */
+        .top-hud {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: linear-gradient(135deg, rgba(0,0,0,0.8), rgba(20,20,40,0.8));
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 25px;
+            padding: 8px 20px;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            font-size: 12px;
+        }
 
-# ===== Initialize Motors =====
-motors_ready = False
-try:
-    motor1_dir = DigitalOutputDevice(DIR1_PIN)
-    motor2_dir = DigitalOutputDevice(DIR2_PIN)
-    motor1_pwm = PWMOutputDevice(PWM1_PIN, frequency=1000)
-    motor2_pwm = PWMOutputDevice(PWM2_PIN, frequency=1000)
-    motors_ready = True
-    print("? Motors initialized successfully")
-except Exception as e:
-    print(f"? Motor initialization failed: {e}")
-    motors_ready = False
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
 
-# ===== Initialize Camera =====
-camera = None
-if CAMERA_AVAILABLE:
-    try:
-        camera = Picamera2()
-        camera_config = camera.create_preview_configuration(
-            main={"size": (640, 480), "format": "RGB888"},
-            lores={"size": (320, 240), "format": "YUV420"}
-        )
-        camera.configure(camera_config)
-        camera.start()
-        print("? Camera initialized successfully")
-        time.sleep(2)  # Let camera warm up
-    except Exception as e:
-        print(f"? Camera initialization failed: {e}")
-        camera = None
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #666;
+        }
 
-# ===== Flask Setup =====
-app = Flask(__name__)
-app.config['SECRET_KEY'] = 'integrated_control_2024'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+        .status-green { background: #4CAF50; }
+        .status-red { background: #ff4444; }
+        .status-orange { background: #ff9800; }
 
-# ===== Global State =====
-current_state = {
-    "joystick": {"x": 0, "y": 0, "active": False},
-    "motors": {"motor1_speed": 0, "motor1_dir": "stop", "motor2_speed": 0, "motor2_dir": "stop"},
-    "gps": {"lat": 0, "lon": 0, "accuracy": 0, "available": False},
-    "lidar": {"points": [], "last_update": 0},
-    "connection_count": 0,
-    "last_command_time": time.time()
-}
+        /* Connection Status (Top Right) */
+        .connection-status {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: linear-gradient(135deg, rgba(0,0,0,0.8), rgba(20,20,40,0.8));
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 20px;
+            padding: 8px 15px;
+            font-size: 11px;
+            font-weight: bold;
+        }
 
-# ===== LiDAR Data Storage =====
-lidar_points = collections.deque(maxlen=2000)  # Real-time point storage
-lidar_lock = threading.Lock()
-lidar_stop = threading.Event()
+        .connected { border-color: #4CAF50; color: #4CAF50; }
+        .disconnected { border-color: #ff4444; color: #ff4444; }
 
-# ===== Utility Functions =====
-def get_pi_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "localhost"
+        /* Bottom HUD Panel */
+        .bottom-hud {
+            position: absolute;
+            bottom: 15px;
+            left: 15px;
+            right: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
 
-def stop_all_motors():
-    if motors_ready:
-        try:
-            motor1_pwm.value = 0
-            motor2_pwm.value = 0
-            motor1_dir.off()
-            motor2_dir.off()
-            print("All motors stopped")
-        except Exception as e:
-            print(f"Error stopping motors: {e}")
-    
-    current_state["motors"] = {
-        "motor1_speed": 0, "motor1_dir": "stop",
-        "motor2_speed": 0, "motor2_dir": "stop"
-    }
+        /* Left Panel - Motor Status & GPS */
+        .left-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
 
-def control_motor(motor_num, speed, direction):
-    if not motors_ready:
-        return
-    
-    try:
-        if motor_num == 1:  # Forward/Backward Motor
-            if direction == "stop" or speed == 0:
-                motor1_pwm.value = 0
-                motor1_dir.off()
-            elif direction == "forward":
-                motor1_dir.on()
-                motor1_pwm.value = abs(speed)
-            elif direction == "backward":
-                motor1_dir.off()
-                motor1_pwm.value = abs(speed)
-                
-        elif motor_num == 2:  # Left/Right Motor
-            if direction == "stop" or speed == 0:
-                motor2_pwm.value = 0
-                motor2_dir.off()
-            elif direction == "right":
-                motor2_dir.on()
-                motor2_pwm.value = abs(speed)
-            elif direction == "left":
-                motor2_dir.off()
-                motor2_pwm.value = abs(speed)
-                
-    except Exception as e:
-        print(f"Motor {motor_num} control error: {e}")
+        .info-panel {
+            background: linear-gradient(135deg, rgba(0,0,0,0.8), rgba(20,20,40,0.8));
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px;
+            padding: 10px;
+            min-width: 200px;
+        }
 
-def joystick_to_individual_motors(x, y):
-    dead_zone = 0.1
-    
-    # Motor 1: Forward/Backward (Y-axis)
-    if abs(y) < dead_zone:
-        motor1_speed = 0
-        motor1_dir = "stop"
-    else:
-        motor1_speed = abs(y)
-        motor1_dir = "forward" if y > 0 else "backward"
-    
-    # Motor 2: Left/Right (X-axis)
-    if abs(x) < dead_zone:
-        motor2_speed = 0
-        motor2_dir = "stop"
-    else:
-        motor2_speed = abs(x)
-        motor2_dir = "right" if x > 0 else "left"
-    
-    return motor1_speed, motor1_dir, motor2_speed, motor2_dir
+        .info-panel h4 {
+            font-size: 12px;
+            margin-bottom: 5px;
+            color: #aaa;
+        }
 
-# ===== LiDAR Functions =====
-def calc_crc8(data_bytes: bytes) -> int:
-    crc = 0
-    for b in data_bytes:
-        crc = CRC_TABLE[(crc ^ b) & 0xff]
-    return crc
+        .motor-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 3px 0;
+            font-size: 11px;
+            font-family: monospace;
+        }
 
-def parse_frame_bytes(frame: bytes):
-    try:
-        ver_len = frame[1]
-        speed, start_angle_raw = struct.unpack_from("<HH", frame, 2)
-        offset = 6
-        raw_points = []
-        for i in range(POINTS_PER_PACK):
-            dist, inten = struct.unpack_from("<HB", frame, offset)
-            raw_points.append((dist, inten))
-            offset += 3
-        end_angle_raw, timestamp = struct.unpack_from("<HH", frame, offset)
-    except Exception:
-        return []
+        .motor-active {
+            color: #4CAF50;
+            font-weight: bold;
+        }
 
-    start_deg = start_angle_raw / 100.0
-    end_deg = end_angle_raw / 100.0
-    if end_deg < start_deg:
-        end_deg += 360.0
-    step = (end_deg - start_deg) / (POINTS_PER_PACK - 1) if POINTS_PER_PACK > 1 else 0.0
+        /* Right Panel - Joystick */
+        .joystick-panel {
+            pointer-events: auto;
+            position: relative;
+        }
 
-    pts = []
-    now = time.time()
-    for i, (dist, inten) in enumerate(raw_points):
-        if dist > 50:  # Filter out invalid readings
-            # Fix upside-down orientation by flipping angle
-            angle = (start_deg + step * i + 180.0) % 360.0
-            pts.append({
-                "timestamp": now,
-                "angle": angle,
-                "distance": dist,
-                "intensity": inten
-            })
-    return pts
+        .joystick-container {
+            width: 140px;
+            height: 140px;
+            background: linear-gradient(135deg, rgba(0,0,0,0.8), rgba(20,20,40,0.8));
+            backdrop-filter: blur(15px);
+            border: 2px solid rgba(255,255,255,0.2);
+            border-radius: 50%;
+            position: relative;
+            cursor: pointer;
+            touch-action: none;
+        }
 
-def lidar_reader_thread():
-    """LiDAR data reading thread"""
-    if LIDAR_SIMULATE:
-        print("Starting LiDAR simulator")
-        lidar_simulator()
-        return
-    
-    try:
-        ser = serial.Serial(LIDAR_PORT, LIDAR_BAUDRATE, timeout=0.01)
-        print(f"? LiDAR opened: {LIDAR_PORT}")
-    except Exception as e:
-        print(f"? LiDAR failed: {e}, starting simulator")
-        lidar_simulator()
-        return
+        .joystick-zones {
+            position: absolute;
+            inset: 8px;
+            border-radius: 50%;
+            background: conic-gradient(
+                from 0deg,
+                rgba(255,0,0,0.1) 0deg 90deg,
+                rgba(0,255,0,0.1) 90deg 180deg,
+                rgba(255,0,0,0.1) 180deg 270deg,
+                rgba(0,0,255,0.1) 270deg 360deg
+            );
+        }
 
-    buffer = bytearray()
-    try:
-        while not lidar_stop.is_set():
-            chunk = ser.read(4096)
-            if chunk:
-                buffer.extend(chunk)
+        .joystick-deadzone {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 30px;
+            height: 30px;
+            transform: translate(-50%, -50%);
+            border: 1px dashed rgba(255,255,255,0.3);
+            border-radius: 50%;
+            background: rgba(0,0,0,0.3);
+        }
 
-            while True:
-                idx = buffer.find(bytes([HEADER]))
-                if idx == -1:
-                    if len(buffer) > FRAME_LEN * 2:
-                        del buffer[:-FRAME_LEN]
-                    break
-                
-                if len(buffer) - idx < FRAME_LEN:
-                    if idx > 0:
-                        del buffer[:idx]
-                    break
-                
-                frame = bytes(buffer[idx: idx + FRAME_LEN])
-                crc_calc = calc_crc8(frame[:-1])
-                crc_recv = frame[-1]
-                
-                if crc_calc == crc_recv:
-                    parsed = parse_frame_bytes(frame)
-                    if parsed:
-                        with lidar_lock:
-                            for p in parsed:
-                                lidar_points.append(p)
-                    del buffer[:idx + FRAME_LEN]
-                else:
-                    del buffer[idx]
+        .joystick-handle {
+            width: 35px;
+            height: 35px;
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            cursor: grab;
+            box-shadow: 0 0 15px rgba(76, 175, 80, 0.5);
+            transition: all 0.1s ease;
+        }
+
+        .joystick-handle:active {
+            cursor: grabbing;
+            transform: translate(-50%, -50%) scale(1.1);
+            box-shadow: 0 0 20px rgba(76, 175, 80, 0.8);
+        }
+
+        .joystick-coordinates {
+            position: absolute;
+            bottom: -25px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-family: monospace;
+            font-size: 10px;
+            color: #aaa;
+            text-align: center;
+            white-space: nowrap;
+        }
+
+        /* Emergency Button */
+        .emergency-btn {
+            position: absolute;
+            top: -60px;
+            right: 0;
+            background: linear-gradient(135deg, #ff4444, #cc0000);
+            border: 2px solid rgba(255,255,255,0.2);
+            color: white;
+            border-radius: 25px;
+            padding: 8px 15px;
+            font-size: 11px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 0 15px rgba(255, 68, 68, 0.4);
+            transition: all 0.2s ease;
+            pointer-events: auto;
+        }
+
+        .emergency-btn:hover {
+            background: linear-gradient(135deg, #ff6666, #ff0000);
+            transform: translateY(-2px);
+            box-shadow: 0 0 20px rgba(255, 68, 68, 0.6);
+        }
+
+        .emergency-btn:active {
+            transform: translateY(0);
+        }
+
+        /* LiDAR Mini Map */
+        .lidar-minimap {
+            position: absolute;
+            top: 60px;
+            left: 15px;
+            width: 150px;
+            height: 150px;
+            background: linear-gradient(135deg, rgba(0,0,0,0.8), rgba(20,20,40,0.8));
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px;
+            pointer-events: auto;
+        }
+
+        .lidar-canvas {
+            width: 100%;
+            height: 100%;
+            border-radius: 8px;
+        }
+
+        .lidar-header {
+            position: absolute;
+            top: -20px;
+            left: 0;
+            font-size: 10px;
+            color: #aaa;
+        }
+
+        /* Direction Indicators */
+        .direction-indicators {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+
+        .direction-label {
+            position: absolute;
+            font-size: 9px;
+            color: rgba(255,255,255,0.6);
+            font-weight: bold;
+            text-shadow: 0 0 5px rgba(0,0,0,0.8);
+        }
+
+        .dir-forward {
+            top: -80px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+
+        .dir-backward {
+            bottom: -80px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+
+        .dir-left {
+            left: -80px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        .dir-right {
+            right: -80px;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        /* Speed Indicators */
+        .speed-indicator {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 5px;
+        }
+
+        .speed-bar {
+            width: 3px;
+            height: 15px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 2px;
+        }
+
+        .speed-bar.active {
+            background: linear-gradient(to top, #4CAF50, #8BC34A);
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .joystick-container {
+                width: 120px;
+                height: 120px;
+            }
             
-            time.sleep(0.001)
+            .joystick-handle {
+                width: 30px;
+                height: 30px;
+            }
             
-    except Exception as e:
-        print(f"LiDAR thread error: {e}")
-    finally:
-        try:
-            ser.close()
-        except:
-            pass
-
-def lidar_simulator():
-    """LiDAR simulator for testing"""
-    import random
-    angle = 0
-    while not lidar_stop.is_set():
-        points = []
-        now = time.time()
-        
-        # Generate a sweep of points
-        for i in range(12):
-            curr_angle = (angle + i * 5) % 360.0
-            # Create some obstacles
-            if 45 <= curr_angle <= 135:
-                dist = 800 + random.randint(-50, 50)
-            elif 225 <= curr_angle <= 315:
-                dist = 1200 + random.randint(-100, 100)
-            else:
-                dist = 2000 + random.randint(-200, 200)
+            .info-panel {
+                min-width: 150px;
+                font-size: 10px;
+            }
             
-            points.append({
-                "timestamp": now,
-                "angle": curr_angle,
-                "distance": dist,
-                "intensity": random.randint(50, 200)
-            })
-        
-        with lidar_lock:
-            for p in points:
-                lidar_points.append(p)
-        
-        angle = (angle + 15) % 360.0
-        time.sleep(0.02)
+            .lidar-minimap {
+                width: 120px;
+                height: 120px;
+            }
+        }
 
-# ===== Camera Functions =====
-def get_camera_frame():
-    """Get latest camera frame as base64 JPEG"""
-    if not camera:
-        return None
-    
-    try:
-        # Capture frame
-        frame = camera.capture_array()
-        
-        # Convert BGR to RGB for proper color display
-        if len(frame.shape) == 3:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Encode as JPEG
-        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        
-        # Convert to base64
-        frame_b64 = base64.b64encode(buffer).decode('utf-8')
-        return frame_b64
-        
-    except Exception as e:
-        print(f"Camera capture error: {e}")
-        return None
+        @media (max-height: 600px) {
+            .lidar-minimap {
+                display: none;
+            }
+            
+            .emergency-btn {
+                top: -50px;
+            }
+        }
 
-# ===== Flask Routes =====
-@app.route('/')
-def index():
-    return render_template('integrated_index.html')
+        /* Animations */
+        .pulse {
+            animation: pulse 1.5s infinite;
+        }
 
-@app.route('/status')
-def get_status():
-    # Get latest LiDAR points
-    with lidar_lock:
-        recent_points = list(lidar_points)[-100:] if lidar_points else []
-    
-    return {
-        "motors_ready": motors_ready,
-        "camera_ready": camera is not None,
-        "lidar_ready": True,
-        "current_state": current_state,
-        "pi_ip": get_pi_ip(),
-        "lidar_points": recent_points[-50:]  # Send latest 50 points
-    }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
 
-@app.route('/camera_feed')
-def camera_feed():
-    """Camera stream endpoint"""
-    def generate_frames():
-        while True:
-            frame = get_camera_frame()
-            if frame:
-                yield f"data:image/jpeg;base64,{frame}\n\n"
-            else:
-                time.sleep(0.1)
-    
-    return Response(generate_frames(), mimetype='text/plain')
+        .glow-green {
+            box-shadow: 0 0 15px rgba(76, 175, 80, 0.6);
+        }
 
-# ===== SocketIO Handlers =====
-@socketio.on('connect')
-def handle_connect():
-    current_state["connection_count"] += 1
-    client_ip = request.environ.get('REMOTE_ADDR', 'unknown')
-    print(f"Client connected from {client_ip} (Total: {current_state['connection_count']})")
-    
-    emit('system_status', {
-        "motors_ready": motors_ready,
-        "camera_ready": camera is not None,
-        "lidar_ready": True,
-        "pi_ip": get_pi_ip()
-    })
+        .glow-red {
+            box-shadow: 0 0 15px rgba(255, 68, 68, 0.6);
+        }
+    </style>
+</head>
+<body>
+    <!-- Full Screen Camera -->
+    <div class="camera-background">
+        <img class="camera-feed" id="cameraFeed" src="" alt="Camera Offline" style="display: none;">
+        <div class="camera-offline" id="cameraOffline">? Robot Camera Offline</div>
+    </div>
 
-@socketio.on('disconnect')
-def handle_disconnect():
-    current_state["connection_count"] = max(0, current_state["connection_count"] - 1)
-    print(f"Client disconnected (Remaining: {current_state['connection_count']})")
-    
-    if current_state["connection_count"] == 0:
-        stop_all_motors()
+    <!-- HUD Overlay -->
+    <div class="hud-overlay">
+        <!-- Connection Status -->
+        <div class="connection-status" id="connectionStatus">? Connecting...</div>
 
-@socketio.on('joystick_input')
-def handle_joystick(data):
-    try:
-        x = float(data.get('x', 0))
-        y = float(data.get('y', 0))
+        <!-- Top Status Bar -->
+        <div class="top-hud">
+            <div class="status-item">
+                <div class="status-dot" id="motorsIndicator"></div>
+                <span>Motors: <span id="motorsText">--</span></span>
+            </div>
+            <div class="status-item">
+                <div class="status-dot" id="cameraIndicator"></div>
+                <span>Camera: <span id="cameraText">--</span></span>
+            </div>
+            <div class="status-item">
+                <div class="status-dot" id="lidarIndicator"></div>
+                <span>LiDAR: <span id="lidarText">--</span></span>
+            </div>
+            <div class="status-item">
+                <div class="status-dot" id="gpsIndicator"></div>
+                <span>GPS: <span id="gpsText">Searching</span></span>
+            </div>
+        </div>
+
+        <!-- LiDAR Mini Map -->
+        <div class="lidar-minimap">
+            <div class="lidar-header">? LiDAR</div>
+            <canvas class="lidar-canvas" id="lidarCanvas"></canvas>
+        </div>
+
+        <!-- Bottom HUD -->
+        <div class="bottom-hud">
+            <!-- Left Panel - System Info -->
+            <div class="left-panel">
+                <!-- Motor Status -->
+                <div class="info-panel">
+                    <h4>?? Motors</h4>
+                    <div class="motor-row">
+                        <span>Forward/Back:</span>
+                        <span id="motor1Status" class="motor-status">STOP</span>
+                    </div>
+                    <div class="motor-row">
+                        <span>Left/Right:</span>
+                        <span id="motor2Status" class="motor-status">STOP</span>
+                    </div>
+                </div>
+
+                <!-- GPS Info -->
+                <div class="info-panel">
+                    <h4>? GPS</h4>
+                    <div class="motor-row">
+                        <span>Lat:</span>
+                        <span id="gpsLat">--</span>
+                    </div>
+                    <div class="motor-row">
+                        <span>Lon:</span>
+                        <span id="gpsLon">--</span>
+                    </div>
+                    <div class="motor-row">
+                        <span>Acc:</span>
+                        <span id="gpsAcc">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel - Joystick Control -->
+            <div class="joystick-panel">
+                <!-- Emergency Button -->
+                <button class="emergency-btn" id="emergencyBtn">? STOP</button>
+                
+                <!-- Direction Labels -->
+                <div class="direction-indicators">
+                    <div class="direction-label dir-forward">FORWARD</div>
+                    <div class="direction-label dir-backward">BACKWARD</div>
+                    <div class="direction-label dir-left">LEFT</div>
+                    <div class="direction-label dir-right">RIGHT</div>
+                </div>
+
+                <!-- Joystick -->
+                <div class="joystick-container" id="joystickContainer">
+                    <div class="joystick-zones"></div>
+                    <div class="joystick-deadzone"></div>
+                    <div class="joystick-handle" id="joystickHandle"></div>
+                </div>
+
+                <!-- Coordinates Display -->
+                <div class="joystick-coordinates">
+                    X: <span id="coordX">0.00</span> | Y: <span id="coordY">0.00</span>
+                </div>
+
+                <!-- Speed Indicator -->
+                <div class="speed-indicator" id="speedIndicator">
+                    <div class="speed-bar"></div>
+                    <div class="speed-bar"></div>
+                    <div class="speed-bar"></div>
+                    <div class="speed-bar"></div>
+                    <div class="speed-bar"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ===== Configuration =====
+        const JOYSTICK_CONFIG = {
+            deadZone: 0.25,          // Larger dead zone (25% of radius)
+            sensitivityCurve: 2.0,   // Exponential sensitivity curve
+            minAngleStep: 15,        // Minimum angle change in degrees
+            movementThreshold: 0.3,  // Minimum movement to register
+            smoothing: 0.8          // Movement smoothing factor
+        };
+
+        // ===== Global Variables =====
+        const socket = io();
+        let isDragging = false;
+        let joystickCenter = { x: 0, y: 0 };
+        let joystickRadius = 0;
+        let currentPosition = { x: 0, y: 0 };
+        let smoothPosition = { x: 0, y: 0 };
+        let lastSentPosition = { x: 0, y: 0 };
+        let lidarPoints = [];
         
-        current_state["joystick"] = {"x": x, "y": y, "active": abs(x) > 0.1 or abs(y) > 0.1}
-        current_state["last_command_time"] = time.time()
+        // ===== DOM Elements =====
+        const joystickContainer = document.getElementById('joystickContainer');
+        const joystickHandle = document.getElementById('joystickHandle');
+        const emergencyBtn = document.getElementById('emergencyBtn');
+        const cameraFeed = document.getElementById('cameraFeed');
+        const cameraOffline = document.getElementById('cameraOffline');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const lidarCanvas = document.getElementById('lidarCanvas');
         
-        m1_speed, m1_dir, m2_speed, m2_dir = joystick_to_individual_motors(x, y)
-        
-        current_state["motors"] = {
-            "motor1_speed": m1_speed, "motor1_dir": m1_dir,
-            "motor2_speed": m2_speed, "motor2_dir": m2_dir
+        // ===== Joystick Functions =====
+        function initJoystick() {
+            const rect = joystickContainer.getBoundingClientRect();
+            joystickCenter = {
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2
+            };
+            joystickRadius = Math.min(rect.width, rect.height) / 2 - 20;
         }
         
-        control_motor(1, m1_speed, m1_dir)
-        control_motor(2, m2_speed, m2_dir)
-        
-        emit('motor_status_update', current_state["motors"], broadcast=True)
-        
-    except Exception as e:
-        print(f"Joystick error: {e}")
-
-@socketio.on('emergency_stop')
-def handle_emergency_stop():
-    print("EMERGENCY STOP!")
-    stop_all_motors()
-    current_state["joystick"] = {"x": 0, "y": 0, "active": False}
-    socketio.emit('emergency_stop_activated', {"timestamp": time.time()}, broadcast=True)
-
-@socketio.on('request_lidar_update')
-def handle_lidar_request():
-    """Send latest LiDAR data to client"""
-    with lidar_lock:
-        # Send recent points for real-time display
-        recent_points = []
-        now = time.time()
-        for p in list(lidar_points)[-200:]:  # Latest 200 points
-            if now - p["timestamp"] < 2.0:  # Points from last 2 seconds
-                recent_points.append({
-                    "angle": p["angle"],
-                    "distance": p["distance"],
-                    "intensity": p["intensity"],
-                    "age": now - p["timestamp"]
-                })
-    
-    emit('lidar_update', {"points": recent_points})
-
-@socketio.on('request_camera_frame')
-def handle_camera_request():
-    """Send latest camera frame"""
-    frame = get_camera_frame()
-    if frame:
-        emit('camera_frame', {"image": frame})
-
-@socketio.on('gps_data')
-def handle_gps_update(data):
-    try:
-        current_state["gps"] = {
-            "lat": float(data.get('lat', 0)),
-            "lon": float(data.get('lon', 0)),
-            "accuracy": int(data.get('accuracy', 0)),
-            "available": True
+        function applySensitivityCurve(value) {
+            // Apply exponential curve for better control
+            const sign = Math.sign(value);
+            const abs = Math.abs(value);
+            return sign * Math.pow(abs, JOYSTICK_CONFIG.sensitivityCurve);
         }
-        emit('gps_update', current_state["gps"], broadcast=True)
-    except Exception as e:
-        print(f"GPS error: {e}")
-
-# ===== Background Threads =====
-def data_broadcast_thread():
-    """Continuously broadcast sensor data"""
-    while True:
-        try:
-            if current_state["connection_count"] > 0:
-                # Broadcast LiDAR data
-                with socketio.test_request_context():
-                    with lidar_lock:
-                        if lidar_points:
-                            recent_points = []
-                            now = time.time()
-                            for p in list(lidar_points)[-100:]:
-                                if now - p["timestamp"] < 1.0:
-                                    recent_points.append({
-                                        "angle": p["angle"],
-                                        "distance": p["distance"],
-                                        "intensity": p["intensity"],
-                                        "age": now - p["timestamp"]
-                                    })
-                            
-                            if recent_points:
-                                socketio.emit('lidar_update', {"points": recent_points})
+        
+        function updateJoystickPosition(clientX, clientY) {
+            const dx = clientX - joystickCenter.x;
+            const dy = clientY - joystickCenter.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            let finalX = 0, finalY = 0;
+            let isActive = false;
+            
+            if (distance > joystickRadius * JOYSTICK_CONFIG.deadZone) {
+                isActive = true;
                 
-                # Broadcast camera frame
-                frame = get_camera_frame()
-                if frame:
-                    socketio.emit('camera_frame', {"image": frame})
+                if (distance <= joystickRadius) {
+                    finalX = dx;
+                    finalY = dy;
+                } else {
+                    // Clamp to circle boundary
+                    const angle = Math.atan2(dy, dx);
+                    finalX = Math.cos(angle) * joystickRadius;
+                    finalY = Math.sin(angle) * joystickRadius;
+                }
+            }
             
-            time.sleep(0.1)  # 10 FPS broadcast rate
+            // Update handle position
+            joystickHandle.style.transform = `translate(${finalX - 17.5}px, ${finalY - 17.5}px)`;
             
-        except Exception as e:
-            print(f"Broadcast error: {e}")
-            time.sleep(1)
-
-def safety_monitor():
-    while True:
-        try:
-            if (time.time() - current_state["last_command_time"] > 3.0 and 
-                current_state["joystick"]["active"]):
+            // Convert to normalized coordinates with dead zone
+            let normalizedX = 0, normalizedY = 0;
+            
+            if (isActive) {
+                normalizedX = finalX / joystickRadius;
+                normalizedY = -finalY / joystickRadius; // Invert Y for intuitive control
                 
-                print("Auto-stop: No input for 3 seconds")
-                stop_all_motors()
-                current_state["joystick"]["active"] = False
-                socketio.emit('auto_stop_triggered', {"reason": "timeout"})
+                // Apply sensitivity curve
+                normalizedX = applySensitivityCurve(normalizedX);
+                normalizedY = applySensitivityCurve(normalizedY);
+                
+                // Apply movement threshold
+                if (Math.abs(normalizedX) < JOYSTICK_CONFIG.movementThreshold) normalizedX = 0;
+                if (Math.abs(normalizedY) < JOYSTICK_CONFIG.movementThreshold) normalizedY = 0;
+            }
             
-            time.sleep(0.5)
+            // Smooth the movement
+            smoothPosition.x = smoothPosition.x * JOYSTICK_CONFIG.smoothing + normalizedX * (1 - JOYSTICK_CONFIG.smoothing);
+            smoothPosition.y = smoothPosition.y * JOYSTICK_CONFIG.smoothing + normalizedY * (1 - JOYSTICK_CONFIG.smoothing);
             
-        except Exception as e:
-            print(f"Safety monitor error: {e}")
-            time.sleep(1)
-
-# ===== Main Entry Point =====
-if __name__ == '__main__':
-    try:
-        # Start background threads
-        lidar_thread = threading.Thread(target=lidar_reader_thread, daemon=True)
-        lidar_thread.start()
+            currentPosition = { 
+                x: Math.round(smoothPosition.x * 100) / 100,
+                y: Math.round(smoothPosition.y * 100) / 100
+            };
+            
+            // Update display
+            document.getElementById('coordX').textContent = currentPosition.x.toFixed(2);
+            document.getElementById('coordY').textContent = currentPosition.y.toFixed(2);
+            
+            // Update speed indicator
+            updateSpeedIndicator();
+            
+            // Send to server only if significant change
+            if (Math.abs(currentPosition.x - lastSentPosition.x) > 0.05 || 
+                Math.abs(currentPosition.y - lastSentPosition.y) > 0.05) {
+                
+                socket.emit('joystick_input', currentPosition);
+                lastSentPosition = { ...currentPosition };
+            }
+            
+            // Visual feedback
+            if (isActive) {
+                joystickHandle.classList.add('glow-green');
+                joystickContainer.style.borderColor = 'rgba(76, 175, 80, 0.6)';
+            } else {
+                joystickHandle.classList.remove('glow-green');
+                joystickContainer.style.borderColor = 'rgba(255,255,255,0.2)';
+            }
+        }
         
-        broadcast_thread = threading.Thread(target=data_broadcast_thread, daemon=True)
-        broadcast_thread.start()
+        function resetJoystick() {
+            joystickHandle.style.transform = 'translate(-17.5px, -17.5px)';
+            currentPosition = { x: 0, y: 0 };
+            smoothPosition = { x: 0, y: 0 };
+            lastSentPosition = { x: 0, y: 0 };
+            
+            document.getElementById('coordX').textContent = '0.00';
+            document.getElementById('coordY').textContent = '0.00';
+            
+            joystickHandle.classList.remove('glow-green');
+            joystickContainer.style.borderColor = 'rgba(255,255,255,0.2)';
+            
+            updateSpeedIndicator();
+            socket.emit('joystick_input', currentPosition);
+        }
         
-        safety_thread = threading.Thread(target=safety_monitor, daemon=True)
-        safety_thread.start()
+        function updateSpeedIndicator() {
+            const speedBars = document.querySelectorAll('.speed-bar');
+            const totalSpeed = Math.sqrt(currentPosition.x * currentPosition.x + currentPosition.y * currentPosition.y);
+            const activeCount = Math.round(totalSpeed * 5);
+            
+            speedBars.forEach((bar, index) => {
+                if (index < activeCount) {
+                    bar.classList.add('active');
+                } else {
+                    bar.classList.remove('active');
+                }
+            });
+        }
         
-        pi_ip = get_pi_ip()
-        print("\n" + "="*60)
-        print("INTEGRATED MOTOR + LiDAR + CAMERA SERVER")
-        print("="*60)
-        print(f"? Access: http://{pi_ip}:5000")
-        print(f"? Motors: {'? Ready' if motors_ready else '? Simulation'}")
-        print(f"? Camera: {'? Ready' if camera else '? Not Available'}")
-        print(f"? LiDAR: {'? Simulated' if LIDAR_SIMULATE else '? Hardware'}")
-        print("="*60)
+        // ===== LiDAR Visualization =====
+        function drawLidarMap() {
+            const canvas = lidarCanvas;
+            const ctx = canvas.getContext('2d');
+            
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+            
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const scale = 0.03; // Smaller scale for minimap
+            
+            // Clear canvas
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw grid rings
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1;
+            [500, 1000, 1500].forEach(radius => {
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radius * scale, 0, 2 * Math.PI);
+                ctx.stroke();
+            });
+            
+            // Draw LiDAR points
+            const now = Date.now() / 1000;
+            lidarPoints.forEach(point => {
+                if (point.age > 1.0) return; // Only recent points
+                
+                const angle = point.angle * Math.PI / 180;
+                const x = centerX + Math.cos(angle) * point.distance * scale;
+                const y = centerY + Math.sin(angle) * point.distance * scale;
+                
+                const alpha = Math.max(0.3, 1.0 - point.age);
+                const intensity = Math.max(0, Math.min(255, point.intensity));
+                
+                ctx.fillStyle = `rgba(${Math.min(255, intensity + 100)}, ${255 - intensity * 0.5}, 100, ${alpha})`;
+                ctx.beginPath();
+                ctx.arc(x, y, point.age < 0.1 ? 2 : 1, 0, 2 * Math.PI);
+                ctx.fill();
+            });
+        }
         
-        socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
+        // ===== Event Listeners =====
         
-    except KeyboardInterrupt:
-        print("\nShutdown requested")
-        lidar_stop.set()
-        stop_all_motors()
-        if camera:
-            camera.stop()
+        // Joystick Mouse Events
+        joystickContainer.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            updateJoystickPosition(e.clientX, e.clientY);
+            e.preventDefault();
+        });
         
-    except Exception as e:
-        print(f"\nServer error: {e}")
-        lidar_stop.set()
-        stop_all_motors()
-        if camera:
-            camera.stop()
+        document.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                updateJoystickPosition(e.clientX, e.clientY);
+            }
+        });
         
-    finally:
-        lidar_stop.set()
-        if camera:
-            try:
-                camera.stop()
-            except:
-                pass
-        if motors_ready:
-            stop_all_motors()
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                resetJoystick();
+            }
+        });
+        
+        // Joystick Touch Events
+        joystickContainer.addEventListener('touchstart', (e) => {
+            isDragging = true;
+            const touch = e.touches[0];
+            updateJoystickPosition(touch.clientX, touch.clientY);
+            e.preventDefault();
+        });
+        
+        document.addEventListener('touchmove', (e) => {
+            if (isDragging && e.touches.length > 0) {
+                const touch = e.touches[0];
+                updateJoystickPosition(touch.clientX, touch.clientY);
+                e.preventDefault();
+            }
+        });
+        
+        document.addEventListener('touchend', () => {
+            if (isDragging) {
+                isDragging = false;
+                resetJoystick();
+            }
+        });
+        
+        // Emergency Stop
+        emergencyBtn.addEventListener('click', () => {
+            socket.emit('emergency_stop');
+            resetJoystick();
+            emergencyBtn.classList.add('glow-red');
+            setTimeout(() => emergencyBtn.classList.remove('glow-red'), 500);
+        });
+        
+        // Keyboard Controls
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                emergencyBtn.click();
+            }
+        });
+        
+        // ===== Socket Events =====
+        socket.on('connect', () => {
+            console.log('? Connected to robot');
+            connectionStatus.textContent = '? Connected';
+            connectionStatus.className = 'connection-status connected';
+            
+            document.getElementById('motorsIndicator').className = 'status-dot status-green';
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('? Disconnected from robot');
+            connectionStatus.textContent = '? Disconnected';
+            connectionStatus.className = 'connection-status disconnected';
+            
+            // Reset all indicators
+            ['motorsIndicator', 'cameraIndicator', 'lidarIndicator', 'gpsIndicator'].forEach(id => {
+                document.getElementById(id).className = 'status-dot status-red';
+            });
+        });
+        
+        socket.on('system_status', (data) => {
+            document.getElementById('motorsText').textContent = data.motors_ready ? 'Ready' : 'Sim';
+            document.getElementById('motorsIndicator').className = 
+                `status-dot ${data.motors_ready ? 'status-green' : 'status-orange'}`;
+                
+            document.getElementById('cameraText').textContent = data.camera_ready ? 'Online' : 'Offline';
+            document.getElementById('cameraIndicator').className = 
+                `status-dot ${data.camera_ready ? 'status-green' : 'status-red'}`;
+                
+            document.getElementById('lidarText').textContent = data.lidar_ready ? 'Active' : 'Offline';
+            document.getElementById('lidarIndicator').className = 
+                `status-dot ${data.lidar_ready ? 'status-green' : 'status-red'}`;
+        });
+        
+        socket.on('motor_status_update', (motors) => {
+            const formatStatus = (speed, dir) => {
+                if (dir === 'stop' || speed === 0) return 'STOP';
+                return `${(speed * 100).toFixed(0)}% ${dir.toUpperCase()}`;
+            };
+            
+            const m1Status = document.getElementById('motor1Status');
+            const m2Status = document.getElementById('motor2Status');
+            
+            m1Status.textContent = formatStatus(motors.motor1_speed, motors.motor1_dir);
+            m2Status.textContent = formatStatus(motors.motor2_speed, motors.motor2_dir);
+            
+            // Add active class for visual feedback
+            m1Status.className = motors.motor1_dir !== 'stop' ? 'motor-status motor-active' : 'motor-status';
+            m2Status.className = motors.motor2_dir !== 'stop' ? 'motor-status motor-active' : 'motor-status';
+        });
+        
+        socket.on('camera_frame', (data) => {
+            if (data.image) {
+                cameraFeed.src = `data:image/jpeg;base64,${data.image}`;
+                cameraFeed.style.display = 'block';
+                cameraOffline.style.display = 'none';
+            }
+        });
+        
+        socket.on('lidar_update', (data) => {
+            lidarPoints = data.points || [];
+            drawLidarMap();
+        });
+        
+        socket.on('emergency_stop_activated', () => {
+            alert('? Emergency Stop Activated!');
+            resetJoystick();
+            emergencyBtn.classList.add('pulse');
+            setTimeout(() => emergencyBtn.classList.remove('pulse'), 2000);
+        });
+        
+        socket.on('gps_update', (gps) => {
+            document.getElementById('gpsLat').textContent = gps.lat.toFixed(6);
+            document.getElementById('gpsLon').textContent = gps.lon.toFixed(6);
+            document.getElementById('gpsAcc').textContent = gps.accuracy + 'm';
+            document.getElementById('gpsText').textContent = 'Active';
+            document.getElementById('gpsIndicator').className = 'status-dot status-green';
+        });
+        
+        // ===== GPS Tracking =====
+        function startGPSTracking() {
+            if (navigator.geolocation) {
+                navigator.geolocation.watchPosition(
+                    (position) => {
+                        const gpsData = {
+                            lat: position.coords.latitude,
+                            lon: position.coords.longitude,
+                            accuracy: Math.round(position.coords.accuracy)
+                        };
+                        socket.emit('gps_data', gpsData);
+                    },
+                    (error) => {
+                        console.log('GPS Error:', error);
+                        document.getElementById('gpsText').textContent = 'Error';
+                        document.getElementById('gpsIndicator').className = 'status-dot status-red';
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 10000,
+                        maximumAge: 5000
+                    }
+                );
+            } else {
+                document.getElementById('gpsText').textContent = 'Not Available';
+                document.getElementById('gpsIndicator').className = 'status-dot status-red';
+            }
+        }
+        
+        // ===== Device Compatibility Functions =====
+        function isMobile() {
+            return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        }
+        
+        function isTablet() {
+            return /(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(navigator.userAgent);
+        }
+        
+        function setupDeviceOptimizations() {
+            const body = document.body;
+            
+            if (isMobile()) {
+                // Mobile optimizations
+                body.classList.add('mobile-device');
+                
+                // Prevent zoom on double tap
+                let lastTouchEnd = 0;
+                document.addEventListener('touchend', function (event) {
+                    const now = (new Date()).getTime();
+                    if (now - lastTouchEnd <= 300) {
+                        event.preventDefault();
+                    }
+                    lastTouchEnd = now;
+                }, false);
+                
+                // Prevent scroll bounce
+                document.addEventListener('touchmove', function(e) {
+                    if (e.target.closest('.joystick-container')) {
+                        return; // Allow joystick movement
+                    }
+                    e.preventDefault();
+                }, { passive: false });
+                
+                // Lock orientation to landscape if possible
+                if (screen.orientation && screen.orientation.lock) {
+                    screen.orientation.lock('landscape').catch(() => {
+                        console.log('Could not lock orientation');
+                    });
+                }
+            }
+            
+            if (isTablet()) {
+                body.classList.add('tablet-device');
+            }
+            
+            // Handle device orientation changes
+            window.addEventListener('orientationchange', () => {
+                setTimeout(() => {
+                    initJoystick();
+                    drawLidarMap();
+                }, 100);
+            });
+            
+            // Handle window resize
+            window.addEventListener('resize', () => {
+                setTimeout(() => {
+                    initJoystick();
+                    drawLidarMap();
+                }, 100);
+            });
+        }
+        
+        // ===== Initialization =====
+        window.addEventListener('load', () => {
+            console.log('? Initializing Gaming Interface');
+            
+            // Setup device-specific optimizations
+            setupDeviceOptimizations();
+            
+            // Initialize components
+            initJoystick();
+            startGPSTracking();
+            
+            // Start data streams
+            socket.emit('request_lidar_update');
+            socket.emit('request_camera_frame');
+            
+            console.log('? Robot Control Interface Ready');
+        });
+        
+        // ===== Regular Data Updates =====
+        setInterval(() => {
+            socket.emit('request_lidar_update');
+        }, 150); // LiDAR updates every 150ms
+        
+        setInterval(() => {
+            socket.emit('request_camera_frame');
+        }, 100); // Camera frames every 100ms
+        
+        // ===== Performance Monitoring =====
+        let frameCount = 0;
+        let lastFrameTime = Date.now();
+        
+        function updatePerformanceStats() {
+            frameCount++;
+            const now = Date.now();
+            
+            if (now - lastFrameTime >= 1000) {
+                const fps = Math.round((frameCount * 1000) / (now - lastFrameTime));
+                // console.log(`UI FPS: ${fps}`);
+                frameCount = 0;
+                lastFrameTime = now;
+            }
+            
+            requestAnimationFrame(updatePerformanceStats);
+        }
+        
+        requestAnimationFrame(updatePerformanceStats);
+        
+        // ===== Error Handling =====
+        window.addEventListener('error', (e) => {
+            console.error('Interface Error:', e.error);
+        });
+        
+        // ===== Fullscreen Support =====
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch((e) => {
+                    console.log('Fullscreen failed:', e);
+                });
+            } else {
+                document.exitFullscreen();
+            }
+        }
+        
+        // Double-tap to toggle fullscreen
+        let lastTap = 0;
+        document.addEventListener('touchend', (e) => {
+            const currentTime = new Date().getTime();
+            const tapLength = currentTime - lastTap;
+            
+            if (tapLength < 500 && tapLength > 0) {
+                if (!e.target.closest('.joystick-container') && 
+                    !e.target.closest('.emergency-btn')) {
+                    toggleFullscreen();
+                }
+            }
+            lastTap = currentTime;
+        });
+        
+        // ===== Wake Lock (Prevent Sleep) =====
+        let wakeLock = null;
+        
+        async function requestWakeLock() {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    console.log('Wake lock activated');
+                }
+            } catch (err) {
+                console.log('Wake lock failed:', err);
+            }
+        }
+        
+        // Request wake lock when interface becomes active
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                requestWakeLock();
+            }
+        });
+        
+        requestWakeLock(); // Initial wake lock request
+    </script>
+    
+    <!-- Additional Mobile Optimizations -->
+    <style>
+        /* Mobile-specific styles */
+        @media (max-width: 480px) {
+            .top-hud {
+                font-size: 10px;
+                padding: 6px 15px;
+                gap: 12px;
+            }
+            
+            .info-panel {
+                min-width: 140px;
+                padding: 8px;
+                font-size: 10px;
+            }
+            
+            .info-panel h4 {
+                font-size: 11px;
+            }
+            
+            .joystick-container {
+                width: 100px;
+                height: 100px;
+            }
+            
+            .joystick-handle {
+                width: 25px;
+                height: 25px;
+            }
+            
+            .emergency-btn {
+                top: -45px;
+                padding: 6px 12px;
+                font-size: 10px;
+            }
+            
+            .direction-indicators .direction-label {
+                font-size: 8px;
+            }
+            
+            .dir-forward, .dir-backward {
+                top: -65px;
+                bottom: -65px;
+            }
+            
+            .dir-left, .dir-right {
+                left: -65px;
+                right: -65px;
+            }
+            
+            .lidar-minimap {
+                width: 100px;
+                height: 100px;
+                top: 50px;
+            }
+        }
+        
+        /* Tablet-specific styles */
+        @media (min-width: 481px) and (max-width: 1024px) {
+            .joystick-container {
+                width: 130px;
+                height: 130px;
+            }
+            
+            .info-panel {
+                min-width: 180px;
+            }
+        }
+        
+        /* High DPI displays */
+        @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+            .joystick-handle {
+                box-shadow: 0 0 20px rgba(76, 175, 80, 0.6);
+            }
+            
+            .emergency-btn {
+                box-shadow: 0 0 20px rgba(255, 68, 68, 0.5);
+            }
+        }
+        
+        /* Landscape mobile */
+        @media (max-height: 500px) and (orientation: landscape) {
+            .top-hud {
+                top: 5px;
+                padding: 4px 12px;
+                font-size: 9px;
+            }
+            
+            .bottom-hud {
+                bottom: 5px;
+            }
+            
+            .lidar-minimap {
+                display: none; /* Hide on small landscape */
+            }
+            
+            .info-panel {
+                padding: 6px;
+            }
+        }
+        
+        /* Dark mode support */
+        @media (prefers-color-scheme: dark) {
+            body {
+                background: #000;
+            }
+        }
+        
+        /* Reduced motion support */
+        @media (prefers-reduced-motion: reduce) {
+            .joystick-handle,
+            .emergency-btn,
+            .speed-bar {
+                transition: none;
+            }
+            
+            .pulse {
+                animation: none;
+            }
+        }
+        
+        /* High contrast support */
+        @media (prefers-contrast: high) {
+            .joystick-container {
+                border-color: #fff;
+            }
+            
+            .info-panel {
+                border-color: #fff;
+            }
+            
+            .status-dot {
+                border: 1px solid #fff;
+            }
+        }
+        
+        /* Touch-friendly sizing */
+        .mobile-device .joystick-container,
+        .tablet-device .joystick-container {
+            min-width: 44px;
+            min-height: 44px;
+        }
+        
+        .mobile-device .emergency-btn,
+        .tablet-device .emergency-btn {
+            min-width: 44px;
+            min-height: 44px;
+            touch-action: manipulation;
+        }
+        
+        /* Prevent text selection */
+        .mobile-device,
+        .tablet-device {
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            -khtml-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        
+        /* iOS Safari specific fixes */
+        @supports (-webkit-touch-callout: none) {
+            .camera-background {
+                height: 100vh;
+                height: -webkit-fill-available;
+            }
+            
+            .hud-overlay {
+                height: 100vh;
+                height: -webkit-fill-available;
+            }
+        }
+        
+        /* Android Chrome specific fixes */
+        @media screen and (max-width: 767px) {
+            .camera-background,
+            .hud-overlay {
+                height: 100vh;
+                height: calc(100vh - env(keyboard-inset-height, 0px));
+            }
+        }
+    </style>
+</body>
+</html>
