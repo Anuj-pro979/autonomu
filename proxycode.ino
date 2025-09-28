@@ -41,3 +41,29 @@ void loop() {
 
   delay(1);  // Small delay to avoid blocking
 }
+
+
+//Final Wiring Summary:
+
+///
+Proxy Arduino (Signal Generator):
+
+Pin 2 → Main Arduino Pin 2
+
+Pin 3 → Main Arduino Pin 3
+
+Pin 4 → Main Arduino Pin 4
+
+Pin 5 → Main Arduino Pin 5
+
+GND → GND of Main Arduino
+
+A0, A1, A2, A3 (for analog input) → Potentially connected to sensors or manual control (optional)
+
+Main Arduino (Motor Controller):
+
+Pins 2, 3, 4, 5 → Same pins as the Proxy Arduino for reading PWM signals.
+
+Motor control logic as per your original code (no need for changes).
+
+///
