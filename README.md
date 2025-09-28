@@ -63,7 +63,7 @@ Do you want me to do that?
 
 
 
-
+---
 ---
 
 Exactly! If you want your **ML model** to act as a **receiver proxy** (emulating the behavior of the FlySky FS-iA10B receiver), you would train it to output the **PWM pulse width values** (ranging from around **1000 µs to 2000 µs**) based on the inputs it receives (such as sensor data, images, or some other form of input).
