@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>Robot Control</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            position: fixed;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+        }
+
+        body {
+            background: #000;
+            color: #0ff07f;
+        }
+
+        /* Fullscreen camera background */
+        .camera-view {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            background: #0a0a0a;
+        }
+
+        .camera-feed {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .camera-offline {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 20px;
+            color: #333;
+            text-align: center;
+        }
+
+        /* HUD Overlay */
+        .hud {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        /* Compact top bar */
+        .top-bar {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(15px);
+            border: 1px solid rgba(0, 255, 127, 0.3);
+            border-radius: 15px;
+            padding: 10px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
+        }
+
+        .status-group {
+            display: flex;
+            gap: 15px;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #333;
+            transition: all 0.3s;
+        }
+
+        .dot.on { 
+            background: #0ff07f; 
+            box-shadow: 0 0 10px #0ff07f; 
+        }
+        
+        .dot.recording { 
+            background: #ff4444; 
+            animation: pulse 1s infinite; 
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
+
+        /* Recording indicator - top left corner */
+        .rec-indicator {
+            position: absolute;
+            top: 70px;
+            left: 10px;
+            background: rgba(255, 68, 68, 0.95);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: bold;
+            display: none;
+            box-shadow: 0 0 20px rgba(255, 68, 68, 0.6);
+        }
+
+        .rec-indicator.active {
+            display: block;
+            animation: pulse 1.5s infinite;
+        }
+
+        /* Frame counter - top right */
+        .frame-count {
+            position: absolute;
+            top: 70px;
+            right: 10px;
+            background: rgba(0, 255, 127, 0.95);
+            color: #000;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: bold;
+            box-shadow: 0 0 20px rgba(0, 255, 127, 0.4);
+        }
+
+        /* Bottom control area */
+        .control-area {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 45vh;
+            background: linear-gradient(to top, rgba(0, 0, 0, 0.95) 0%, transparent 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-end;
+            padding: 20px;
+            pointer-events: none;
+        }
+
+        /* Large record button */
+        .record-btn {
+            background: linear-gradient(135deg, #0ff07f, #00cc66);
+            border: 3px solid rgba(255, 255, 255, 0.9);
+            color: #000;
+            padding: 18px 50px;
+            border-radius: 50px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 5px 30px rgba(0, 255, 127, 0.5);
+            transition: all 0.2s;
+            margin-bottom: 20px;
+            pointer-events: auto;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .record-btn:active {
+            transform: scale(0.95);
+        }
+
+        .record-btn.recording {
+            background: linear-gradient(135deg, #ff4444, #cc0000);
+            box-shadow: 0 5px 30px rgba(255, 68, 68, 0.6);
+            animation: pulse 1.5s infinite;
+        }
+
+        /* Joystick container */
+        .joystick-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            max-width: 600px;
+            pointer-events: auto;
+        }
+
+        /* Info display on left */
+        .info-display {
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(15px);
+            border: 1px solid rgba(0, 255, 127, 0.3);
+            border-radius: 15px;
+            padding: 15px;
+            min-width: 140px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            margin: 6px 0;
+            font-size: 12px;
+        }
+
+        .info-label {
+            color: #666;
+        }
+
+        .info-value {
+            color: #0ff07f;
+            font-weight: bold;
+            font-family: monospace;
+        }
+
+        /* Large joystick */
+        .joystick {
+            width: 200px;
+            height: 200px;
+            background: radial-gradient(circle at 30% 30%, rgba(0, 255, 127, 0.15), transparent),
+                        linear-gradient(135deg, rgba(10, 10, 10, 0.95), rgba(20, 40, 30, 0.95));
+            backdrop-filter: blur(20px);
+            border: 4px solid #0ff07f;
+            border-radius: 50%;
+            position: relative;
+            cursor: pointer;
+            touch-action: none;
+            box-shadow: 0 0 50px rgba(0, 255, 127, 0.4),
+                        inset 0 0 30px rgba(0, 0, 0, 0.6);
+        }
+
+        .joystick-handle {
+            width: 70px;
+            height: 70px;
+            background: radial-gradient(circle at 35% 35%, #66ffbb, #0ff07f);
+            border: 4px solid rgba(255, 255, 255, 0.7);
+            border-radius: 50%;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            cursor: grab;
+            box-shadow: 0 0 30px rgba(0, 255, 127, 0.9),
+                        0 5px 20px rgba(0, 0, 0, 0.5);
+            transition: all 0.1s;
+        }
+
+        .joystick-handle:active {
+            cursor: grabbing;
+            transform: translate(-50%, -50%) scale(1.15);
+        }
+
+        /* Emergency stop - prominent position */
+        .emergency-btn {
+            position: absolute;
+            bottom: 50vh;
+            right: 15px;
+            background: linear-gradient(135deg, #ff4444, #cc0000);
+            border: 4px solid #fff;
+            color: white;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 5px 30px rgba(255, 68, 68, 0.6);
+            pointer-events: auto;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            line-height: 1.2;
+        }
+
+        .emergency-btn:active {
+            transform: scale(1.1);
+        }
+
+        .emergency-btn span {
+            font-size: 28px;
+        }
+
+        /* GPS Permission Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.95);
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: linear-gradient(135deg, #1a1a1a, #2a2a2a);
+            border: 3px solid #0ff07f;
+            border-radius: 25px;
+            padding: 35px 25px;
+            max-width: 90%;
+            width: 400px;
+            text-align: center;
+            box-shadow: 0 0 60px rgba(0, 255, 127, 0.6);
+        }
+
+        .modal-icon {
+            font-size: 60px;
+            margin-bottom: 20px;
+        }
+
+        .modal-content h2 {
+            color: #0ff07f;
+            margin-bottom: 15px;
+            font-size: 22px;
+        }
+
+        .modal-content p {
+            color: #ccc;
+            margin-bottom: 30px;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .modal-btn {
+            background: linear-gradient(135deg, #0ff07f, #00cc66);
+            border: none;
+            color: #000;
+            padding: 15px 35px;
+            border-radius: 30px;
+            font-size: 15px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .modal-btn:active {
+            transform: scale(0.95);
+        }
+
+        .modal-btn.secondary {
+            background: transparent;
+            border: 2px solid #666;
+            color: #999;
+        }
+
+        /* Tablet landscape */
+        @media (orientation: landscape) and (max-height: 600px) {
+            .control-area {
+                height: 100%;
+                background: linear-gradient(to right, rgba(0, 0, 0, 0.95) 0%, transparent 100%);
+                flex-direction: row;
+                justify-content: space-around;
+                align-items: center;
+            }
+
+            .joystick {
+                width: 180px;
+                height: 180px;
+            }
+
+            .joystick-handle {
+                width: 60px;
+                height: 60px;
+            }
+
+            .record-btn {
+                padding: 15px 40px;
+                font-size: 16px;
+            }
+        }
+
+        /* Mobile adjustments */
+        @media (max-width: 768px) {
+            .joystick {
+                width: 180px;
+                height: 180px;
+            }
+            
+            .joystick-handle {
+                width: 60px;
+                height: 60px;
+            }
+            
+            .info-display {
+                min-width: 120px;
+                padding: 12px;
+            }
+
+            .info-row {
+                font-size: 11px;
+            }
+
+            .record-btn {
+                padding: 15px 40px;
+                font-size: 16px;
+            }
+
+            .emergency-btn {
+                width: 70px;
+                height: 70px;
+                font-size: 12px;
+            }
+
+            .emergency-btn span {
+                font-size: 24px;
+            }
+        }
+
+        /* Prevent overscroll bounce on iOS */
+        body {
+            overscroll-behavior: none;
+        }
+    </style>
+</head>
+<body>
+    <!-- GPS Permission Modal -->
+    <div class="modal" id="gpsModal">
+        <div class="modal-content">
+            <div class="modal-icon">📍</div>
+            <h2>Enable GPS Tracking</h2>
+            <p>This app needs your location to record GPS coordinates during training. Your data stays on the robot and is never shared.</p>
+            <div class="modal-buttons">
+                <button class="modal-btn" id="allowGpsBtn">Allow GPS</button>
+                <button class="modal-btn secondary" id="denyGpsBtn">Skip</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Camera View (Background) -->
+    <div class="camera-view">
+        <img class="camera-feed" id="cameraFeed" style="display:none;">
+        <div class="camera-offline" id="cameraOffline">
+            <div>📷</div>
+            <div>Camera Initializing...</div>
+        </div>
+    </div>
+
+    <!-- HUD Overlay -->
+    <div class="hud">
+        <!-- Compact Status Bar -->
+        <div class="top-bar">
+            <div class="status-group">
+                <div class="status-item">
+                    <div class="dot" id="connDot"></div>
+                    <span id="connText">...</span>
+                </div>
+                <div class="status-item">
+                    <div class="dot" id="motorDot"></div>
+                    <span>Motor</span>
+                </div>
+                <div class="status-item">
+                    <div class="dot" id="camDot"></div>
+                    <span>Cam</span>
+                </div>
+            </div>
+            <div class="status-group">
+                <div class="status-item">
+                    <div class="dot" id="gpsDot"></div>
+                    <span id="gpsText">GPS</span>
+                </div>
+                <div class="status-item">
+                    <div class="dot" id="recDot"></div>
+                    <span id="recText">Ready</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recording Indicator -->
+        <div class="rec-indicator" id="recIndicator">⏺ REC</div>
+
+        <!-- Frame Counter -->
+        <div class="frame-count" id="frameCount">0 Frames</div>
+
+        <!-- Emergency Stop -->
+        <button class="emergency-btn" id="emergencyBtn">
+            <span>🛑</span>
+            STOP
+        </button>
+
+        <!-- Bottom Control Area -->
+        <div class="control-area">
+            <!-- Large Record Button -->
+            <button class="record-btn" id="recordBtn">Start Recording</button>
+
+            <!-- Joystick + Info -->
+            <div class="joystick-container">
+                <!-- Info Panel -->
+                <div class="info-display">
+                    <div class="info-row">
+                        <span class="info-label">Steering</span>
+                        <span class="info-value" id="steeringVal">0</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Throttle</span>
+                        <span class="info-value" id="throttleVal">0</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Lat</span>
+                        <span class="info-value" id="gpsLat">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Lon</span>
+                        <span class="info-value" id="gpsLon">--</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Acc</span>
+                        <span class="info-value" id="gpsAcc">--</span>
+                    </div>
+                </div>
+
+                <!-- Joystick -->
+                <div class="joystick" id="joystick">
+                    <div class="joystick-handle" id="handle"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Request fullscreen on load
+        function requestFullscreen() {
+            const elem = document.documentElement;
+            if (elem.requestFullscreen) {
+                elem.requestFullscreen().catch(err => console.log('Fullscreen failed:', err));
+            } else if (elem.webkitRequestFullscreen) {
+                elem.webkitRequestFullscreen();
+            } else if (elem.mozRequestFullScreen) {
+                elem.mozRequestFullScreen();
+            } else if (elem.msRequestFullscreen) {
+                elem.msRequestFullscreen();
+            }
+        }
+
+        // Try to enter fullscreen on first user interaction
+        let fullscreenRequested = false;
+        document.addEventListener('touchstart', () => {
+            if (!fullscreenRequested) {
+                requestFullscreen();
+                fullscreenRequested = true;
+            }
+        }, { once: true });
+
+        const DEAD_ZONE = 0.1;
+        const socket = io();
+
+        let isDragging = false;
+        let isRecording = false;
+        let joystickCenter = { x: 0, y: 0 };
+        let joystickRadius = 0;
+        let currentPos = { x: 0, y: 0 };
+        let gpsWatchId = null;
+        let gpsData = { lat: 0, lon: 0, accuracy: 0 };
+        let gpsEnabled = false;
+
+        const joystick = document.getElementById('joystick');
+        const handle = document.getElementById('handle');
+        const recordBtn = document.getElementById('recordBtn');
+        const emergencyBtn = document.getElementById('emergencyBtn');
+        const cameraFeed = document.getElementById('cameraFeed');
+        const cameraOffline = document.getElementById('cameraOffline');
+        const gpsModal = document.getElementById('gpsModal');
+        const allowGpsBtn = document.getElementById('allowGpsBtn');
+        const denyGpsBtn = document.getElementById('denyGpsBtn');
+
+        function initJoystick() {
+            const rect = joystick.getBoundingClientRect();
+            joystickCenter = {
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2
+            };
+            joystickRadius = rect.width / 2 - 40;
+        }
+
+        initJoystick();
+        window.addEventListener('resize', initJoystick);
+        window.addEventListener('orientationchange', () => {
+            setTimeout(initJoystick, 100);
+        });
+
+        function updateJoystick(clientX, clientY) {
+            const dx = clientX - joystickCenter.x;
+            const dy = clientY - joystickCenter.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            let finalX = 0, finalY = 0;
+
+            if (distance > joystickRadius * DEAD_ZONE) {
+                if (distance <= joystickRadius) {
+                    finalX = dx;
+                    finalY = dy;
+                } else {
+                    const angle = Math.atan2(dy, dx);
+                    finalX = Math.cos(angle) * joystickRadius;
+                    finalY = Math.sin(angle) * joystickRadius;
+                }
+            }
+
+            handle.style.transform = `translate(${finalX - 35}px, ${finalY - 35}px)`;
+
+            let normX = finalX / joystickRadius;
+            let normY = -finalY / joystickRadius;
+
+            if (Math.abs(normX) < DEAD_ZONE) normX = 0;
+            if (Math.abs(normY) < DEAD_ZONE) normY = 0;
+
+            currentPos = {
+                x: Math.round(normX * 100) / 100,
+                y: Math.round(normY * 100) / 100
+            };
+
+            const steering = Math.round(currentPos.x * 100);
+            const throttle = Math.round(currentPos.y * 100);
+            
+            document.getElementById('steeringVal').textContent = steering;
+            document.getElementById('throttleVal').textContent = throttle;
+
+            socket.emit('joystick_input', currentPos);
+        }
+
+        function resetJoystick() {
+            handle.style.transform = 'translate(-35px, -35px)';
+            currentPos = { x: 0, y: 0 };
+            document.getElementById('steeringVal').textContent = '0';
+            document.getElementById('throttleVal').textContent = '0';
+            socket.emit('joystick_input', currentPos);
+        }
+
+        function handleStart(e) {
+            e.preventDefault();
+            isDragging = true;
+            const touch = e.touches ? e.touches[0] : e;
+            updateJoystick(touch.clientX, touch.clientY);
+        }
+
+        function handleMove(e) {
+            if (!isDragging) return;
+            e.preventDefault();
+            const touch = e.touches ? e.touches[0] : e;
+            updateJoystick(touch.clientX, touch.clientY);
+        }
+
+        function handleEnd(e) {
+            if (!isDragging) return;
+            e.preventDefault();
+            isDragging = false;
+            resetJoystick();
+        }
+
+        joystick.addEventListener('mousedown', handleStart);
+        document.addEventListener('mousemove', handleMove);
+        document.addEventListener('mouseup', handleEnd);
+
+        joystick.addEventListener('touchstart', handleStart, { passive: false });
+        document.addEventListener('touchmove', handleMove, { passive: false });
+        document.addEventListener('touchend', handleEnd);
+        document.addEventListener('touchcancel', handleEnd);
+
+        recordBtn.addEventListener('click', () => {
+            isRecording = !isRecording;
+            socket.emit('toggle_recording', { recording: isRecording });
+            
+            if (isRecording) {
+                recordBtn.textContent = '⏹ Stop Recording';
+                recordBtn.classList.add('recording');
+                document.getElementById('recIndicator').classList.add('active');
+                document.getElementById('recDot').classList.add('recording');
+                document.getElementById('recText').textContent = 'REC';
+                console.log('🔴 RECORDING STARTED');
+                
+                if (navigator.vibrate) navigator.vibrate(200);
+            } else {
+                recordBtn.textContent = 'Start Recording';
+                recordBtn.classList.remove('recording');
+                document.getElementById('recIndicator').classList.remove('active');
+                document.getElementById('recDot').classList.remove('recording');
+                document.getElementById('recText').textContent = 'Ready';
+                console.log('⏹ RECORDING STOPPED');
+                
+                if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+            }
+        });
+
+        emergencyBtn.addEventListener('click', () => {
+            socket.emit('emergency_stop');
+            resetJoystick();
+            if (isRecording) {
+                isRecording = false;
+                recordBtn.click();
+            }
+            
+            if (navigator.vibrate) {
+                navigator.vibrate([200, 100, 200, 100, 200]);
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.code === 'Escape') {
+                e.preventDefault();
+                emergencyBtn.click();
+            }
+        });
+
+        // GPS with JavaScript Geolocation API (based on working reference)
+        function initGPS() {
+            if (!('geolocation' in navigator)) {
+                console.error('Geolocation not supported');
+                document.getElementById('gpsText').textContent = 'No GPS';
+                alert('Geolocation not supported in this browser');
+                return;
+            }
+
+            console.log('Starting GPS tracking...');
+            
+            // GPS options tuned for accuracy
+            const gpsOptions = {
+                enableHighAccuracy: true,
+                maximumAge: 1000,        // Cache position for max 1 second
+                timeout: 10000           // 10 second timeout
+            };
+            
+            gpsWatchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    // Extract GPS data
+                    const lat = position.coords.latitude;
+                    const lon = position.coords.longitude;
+                    const acc = Math.round(position.coords.accuracy);
+                    const timestamp = position.timestamp;
+
+                    gpsData = { lat, lon, accuracy: acc };
+
+                    // Update UI
+                    document.getElementById('gpsLat').textContent = lat.toFixed(5);
+                    document.getElementById('gpsLon').textContent = lon.toFixed(5);
+                    document.getElementById('gpsAcc').textContent = acc + 'm';
+
+                    // Send to server
+                    socket.emit('gps_data', {
+                        lat: lat,
+                        lon: lon,
+                        accuracy: acc,
+                        timestamp: timestamp
+                    });
+                    
+                    // Update status indicators
+                    document.getElementById('gpsDot').classList.add('on');
+                    document.getElementById('gpsText').textContent = 'GPS ✓';
+                    gpsEnabled = true;
+
+                    console.log(`GPS: ${lat.toFixed(6)}, ${lon.toFixed(6)} (±${acc}m)`);
+                },
+                (error) => {
+                    console.error('GPS error:', error.code, error.message);
+                    let errorMsg = 'GPS Error';
+                    let alertMsg = '';
+                    
+                    switch(error.code) {
+                        case error.PERMISSION_DENIED:
+                            errorMsg = 'Denied';
+                            alertMsg = 'GPS permission denied. Please enable location access in your browser settings.';
+                            break;
+                        case error.POSITION_UNAVAILABLE:
+                            errorMsg = 'Unavailable';
+                            alertMsg = 'GPS position unavailable. Make sure you have clear sky view.';
+                            break;
+                        case error.TIMEOUT:
+                            errorMsg = 'Timeout';
+                            alertMsg = 'GPS timeout. Retrying...';
+                            break;
+                    }
+                    
+                    document.getElementById('gpsText').textContent = errorMsg;
+                    document.getElementById('gpsDot').classList.remove('on');
+                    gpsEnabled = false;
+                    
+                    if (alertMsg && error.code === error.PERMISSION_DENIED) {
+                        alert(alertMsg);
+                    }
+                },
+                gpsOptions
+            );
+
+            console.log('GPS watch started with ID:', gpsWatchId);
+        }
+
+        allowGpsBtn.addEventListener('click', () => {
+            gpsModal.classList.remove('active');
+            initGPS();
+        });
+
+        denyGpsBtn.addEventListener('click', () => {
+            gpsModal.classList.remove('active');
+            console.log('User skipped GPS - continuing without location data');
+            document.getElementById('gpsText').textContent = 'Disabled';
+            document.getElementById('gpsLat').textContent = 'N/A';
+            document.getElementById('gpsLon').textContent = 'N/A';
+            document.getElementById('gpsAcc').textContent = 'N/A';
+            // Send dummy GPS data (0,0) so server doesn't break
+            gpsData = { lat: 0, lon: 0, accuracy: 0 };
+        });
+
+        // Socket handlers
+        socket.on('connect', () => {
+            document.getElementById('connDot').classList.add('on');
+            document.getElementById('connText').textContent = 'Connected';
+            console.log('✓ Connected');
+        });
+
+        socket.on('disconnect', () => {
+            document.getElementById('connDot').classList.remove('on');
+            document.getElementById('connText').textContent = 'Offline';
+            if (isRecording) recordBtn.click();
+            console.log('✗ Disconnected');
+        });
+
+        socket.on('system_status', (data) => {
+            if (data.motors_ready) {
+                document.getElementById('motorDot').classList.add('on');
+            }
+            if (data.camera_ready) {
+                document.getElementById('camDot').classList.add('on');
+            }
+            if (data.frame_count !== undefined) {
+                document.getElementById('frameCount').textContent = `${data.frame_count} Frames`;
+            }
+        });
+
+        socket.on('camera_frame', (data) => {
+            if (data.image) {
+                cameraFeed.src = `data:image/jpeg;base64,${data.image}`;
+                cameraFeed.style.display = 'block';
+                cameraOffline.style.display = 'none';
+            }
+        });
+
+        socket.on('data_saved', (data) => {
+            document.getElementById('frameCount').textContent = `${data.count} Frames`;
+        });
+
+        socket.on('recording_status', (data) => {
+            isRecording = data.recording;
+        });
+
+        socket.on('emergency_stop_activated', () => {
+            resetJoystick();
+        });
+
+        // Request camera frames
+        setInterval(() => {
+            socket.emit('request_camera_frame');
+        }, 100);
+
+        // Show GPS modal after 2 seconds (auto-request like reference code)
+        setTimeout(() => {
+            if (!gpsWatchId && !gpsEnabled) {
+                console.log('Auto-requesting GPS permission...');
+                gpsModal.classList.add('active');
+            }
+        }, 1500);
+
+        // Cleanup
+        window.addEventListener('beforeunload', () => {
+            if (gpsWatchId) {
+                navigator.geolocation.clearWatch(gpsWatchId);
+            }
+        });
+
+        // Prevent pull-to-refresh
+        document.body.addEventListener('touchmove', (e) => {
+            if (e.touches.length > 1) {
+                e.preventDefault();
+            }
+        }, { passive: false });
+
+        console.log('🎮 Robot Control Ready');
+        console.log('📍 Using JavaScript Geolocation API');
+    </script>
+</body>
+</html>
